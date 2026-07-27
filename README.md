@@ -80,6 +80,25 @@ A 403 on the mailbox lookup is deliberately *not* reported as "not found" — th
 means the mailbox exists but the Application Access Policy excludes it, and
 conflating the two sends you hunting for a typo that isn't there.
 
+### Finding the organizer's copy
+
+Exchange gives every mailbox its own event id for the same meeting, so the id read
+off the source calendar is useless against the organizer's. `iCalUId` is the
+cross-mailbox identity. Three things make that lookup harder than it sounds:
+
+1. **Occurrences carry a per-instance UID.** `calendarView` returns occurrences,
+   whose `iCalUId` encodes the instance and matches nothing in another mailbox.
+   The series master is fetched first and its UID used instead.
+2. **`/users/{id}/events` only searches the default calendar.** It's tried first
+   as a single cheap call, then every other calendar in the mailbox is searched
+   before concluding the meeting can't be found. Calendar lists are cached per
+   organizer for the duration of a scan.
+3. **The organizer is often the mirrored person.** In that case the event already
+   read *is* the organizer's copy, so it short-circuits with no lookup at all.
+
+The PATCH targets wherever the copy was actually found, not an assumed
+`/users/{id}/events/{id}` path.
+
 ## Known limitations
 
 - **Adding an attendee notifies everyone.** Graph has no equivalent of Outlook's

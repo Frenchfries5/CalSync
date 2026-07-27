@@ -191,9 +191,30 @@ async function calendarView(
  * "can't write to this mailbox" message.
  */
 type OrganizerLookup =
-  | { status: "found"; event: GraphEvent }
+  | { status: "found"; event: GraphEvent; patchPath: string }
   | { status: "unreachable"; reason: string }
   | { status: "not-found"; reason: string };
+
+// Organizer calendar lists are reused heavily across a scan (one organizer
+// typically owns several of the matched meetings) and barely change.
+const organizerCalendarCache = new Map<string, { value: GraphCalendar[]; expiresAt: number }>();
+
+async function organizerCalendars(email: string): Promise<GraphCalendar[]> {
+  const key = lower(email);
+  const cached = organizerCalendarCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  const calendars = await graphAll<GraphCalendar>(
+    `/users/${encodeURIComponent(email)}/calendars?$select=id,name&$top=50`,
+  );
+  organizerCalendarCache.set(key, { value: calendars, expiresAt: Date.now() + 5 * 60 * 1000 });
+  return calendars;
+}
+
+function pickMatch(events: GraphEvent[]): GraphEvent | undefined {
+  // A recurring meeting returns its series master here, which is exactly what
+  // we want to patch — editing the master covers all future occurrences.
+  return events.find((e) => e.type === "seriesMaster") || events[0];
+}
 
 /**
  * Finds the ORGANIZER's own copy of a meeting.
@@ -214,20 +235,42 @@ async function findOrganizerCopy(
   if (!iCalUId) {
     return { status: "not-found", reason: "the event has no iCalUId to match on" };
   }
+  const query = `$filter=iCalUId eq ${odataString(iCalUId)}&$select=${EVENT_SELECT}&$top=5`;
+  const userBase = `/users/${encodeURIComponent(organizerEmail)}`;
+
   try {
-    const body = await graphGet<{ value?: GraphEvent[] }>(
-      `/users/${encodeURIComponent(organizerEmail)}/events?$filter=iCalUId eq ${odataString(
-        iCalUId,
-      )}&$select=${EVENT_SELECT}&$top=5`,
-    );
-    const events = body.value || [];
-    // A recurring meeting returns its series master here, which is exactly what
-    // we want to patch — editing the master covers all future occurrences.
-    const match = events.find((e) => e.type === "seriesMaster") || events[0];
-    if (match) return { status: "found", event: match };
+    // Fast path: /users/{id}/events covers only the DEFAULT calendar, but that's
+    // where the overwhelming majority of meetings live, so try it in one call
+    // before fanning out.
+    const body = await graphGet<{ value?: GraphEvent[] }>(`${userBase}/events?${query}`);
+    const match = pickMatch(body.value || []);
+    if (match) {
+      return { status: "found", event: match, patchPath: `${userBase}/events/${encodeURIComponent(match.id)}` };
+    }
+
+    // Slow path: the default calendar isn't the only one they can organise
+    // from. Search the rest before concluding we can't reach the meeting.
+    const calendars = await organizerCalendars(organizerEmail);
+    for (const calendar of calendars) {
+      if (!calendar.id) continue;
+      const scoped = await graphGet<{ value?: GraphEvent[] }>(
+        `${userBase}/calendars/${encodeURIComponent(calendar.id)}/events?${query}`,
+      );
+      const scopedMatch = pickMatch(scoped.value || []);
+      if (scopedMatch) {
+        return {
+          status: "found",
+          event: scopedMatch,
+          patchPath: `${userBase}/calendars/${encodeURIComponent(
+            calendar.id,
+          )}/events/${encodeURIComponent(scopedMatch.id)}`,
+        };
+      }
+    }
+
     return {
       status: "not-found",
-      reason: `their mailbox is readable, but no event there matches this meeting's UID (Graph only searches their default calendar, so a meeting they organise from a secondary calendar won't be found)`,
+      reason: `their mailbox is readable, but none of their ${calendars.length} calendar(s) hold an event matching this meeting's UID`,
     };
   } catch (error) {
     if (error instanceof GraphError && error.status === 403) {
@@ -244,6 +287,32 @@ async function findOrganizerCopy(
     }
     throw error;
   }
+}
+
+/**
+ * Locates the copy of a meeting we should patch.
+ *
+ * When the organizer is the very mailbox we're mirroring, the event already in
+ * hand *is* the organizer's copy — no lookup needed, and looking anyway would
+ * mean searching a mailbox for something we're holding. That case is common
+ * (you mirror someone who runs several of their own team's meetings) and it
+ * used to fail outright whenever they organised from a secondary calendar,
+ * because the fallback search couldn't see past the default one.
+ */
+async function locateOrganizerCopy(
+  source: CalendarSource,
+  calendarId: string,
+  event: GraphEvent,
+): Promise<OrganizerLookup> {
+  const organizerEmail = event.organizer?.emailAddress?.address || "";
+  if (organizerEmail && lower(organizerEmail) === lower(source.address)) {
+    return {
+      status: "found",
+      event,
+      patchPath: sourceEventPath(source, calendarId, event.id),
+    };
+  }
+  return findOrganizerCopy(organizerEmail, event.iCalUId || "");
 }
 
 /**
@@ -419,7 +488,7 @@ export async function scanMailbox(options: ScanOptions): Promise<ScanResult> {
         // masterEvent(). This is also the copy whose attendee list tells us
         // whether the new hire is already on the whole series.
         const master = await masterEvent(source, calendarId, event);
-        const lookup = await findOrganizerCopy(organizerEmail, master.iCalUId || "");
+        const lookup = await locateOrganizerCopy(source, calendarId, master);
 
         if (lookup.status !== "found") {
           return {
@@ -495,7 +564,7 @@ export async function applyOne(
 
   // sourceEventId is already the series master's id, so source.iCalUId is the
   // master UID here — no occurrence lookup needed on this path.
-  const lookup = await findOrganizerCopy(organizerEmail, source.iCalUId || "");
+  const lookup = await locateOrganizerCopy(calendarSource, row.sourceCalendarId, source);
 
   if (lookup.status === "found") {
     const organizerCopy = lookup.event;
@@ -513,10 +582,9 @@ export async function applyOne(
       })),
       { emailAddress: { address: newHire, name: newHire }, type: attendeeType },
     ];
-    await graphPatch(
-      `/users/${encodeURIComponent(organizerEmail)}/events/${encodeURIComponent(organizerCopy.id)}`,
-      { attendees },
-    );
+    // patchPath came from wherever the copy was actually found — their default
+    // calendar, a secondary one, or the source itself when they organise it.
+    await graphPatch(lookup.patchPath, { attendees });
     return { ...base, method: "direct", status: "added" };
   }
 
