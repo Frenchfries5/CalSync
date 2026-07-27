@@ -3,13 +3,15 @@ import { auth, signOut } from "@/auth";
 import { isAllowedUser, presetSources } from "@/lib/config";
 import OnboardingTool from "@/components/OnboardingTool";
 
+// AUTH_MICROSOFT_ENTRA_ID_ISSUER is absent on purpose: entraIssuer() derives it
+// from GRAPH_TENANT_ID when it isn't set explicitly, so requiring it here would
+// report a problem that doesn't exist.
 const REQUIRED_ENV = [
   "GRAPH_TENANT_ID",
   "GRAPH_CLIENT_ID",
   "GRAPH_CLIENT_SECRET",
   "AUTH_MICROSOFT_ENTRA_ID_ID",
   "AUTH_MICROSOFT_ENTRA_ID_SECRET",
-  "AUTH_MICROSOFT_ENTRA_ID_ISSUER",
   "AUTH_SECRET",
   "ALLOWED_USERS",
 ];

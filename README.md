@@ -118,8 +118,16 @@ Separate concern from the Graph token: this only proves who is sitting at the
 keyboard. A standard Auth.js Entra ID setup — redirect URI
 `https://<your-app>.vercel.app/api/auth/callback/microsoft-entra-id`.
 
-Set `AUTH_MICROSOFT_ENTRA_ID_ID`, `AUTH_MICROSOFT_ENTRA_ID_SECRET`,
-`AUTH_MICROSOFT_ENTRA_ID_ISSUER`, and `AUTH_SECRET` (`openssl rand -base64 32`).
+Set `AUTH_MICROSOFT_ENTRA_ID_ID`, `AUTH_MICROSOFT_ENTRA_ID_SECRET`, and
+`AUTH_SECRET` (`npx auth secret`).
+
+`AUTH_MICROSOFT_ENTRA_ID_ISSUER` is optional — it's derived from
+`GRAPH_TENANT_ID` when unset. Set it only to point sign-in at a different tenant
+than the one the Graph credentials use. Note that the underlying provider's own
+fallback, when no issuer can be determined, is the `/common` endpoint: that fails
+on a single-tenant app registration with `AADSTS50194`, and on a multi-tenant one
+it would let any Microsoft account reach the sign-in callback. The login page
+refuses to pretend that's fine and shows a setup warning instead.
 
 `ALLOWED_USERS` is a comma-separated allowlist. It **fails closed** — empty means
 nobody gets in. This is a real security boundary here, because the app token can
