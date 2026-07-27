@@ -80,13 +80,26 @@ export default function OnboardingTool({ presets }: { presets: string[] }) {
   const [appliedContext, setAppliedContext] = useState({ newHireEmail: "", sourceMailbox: "", calendar: "" });
 
   const [view, setView] = useState<"list" | "calendar">("list");
+  const [typeFilter, setTypeFilter] = useState<"all" | "recurring" | "one-off">("all");
   const [weekStart, setWeekStart] = useState(() => mondayOf(new Date()));
   const [occurrences, setOccurrences] = useState<Occurrence[]>([]);
   const [calLoading, setCalLoading] = useState(false);
   const [calError, setCalError] = useState("");
 
-  const selectable = rows.filter((row) => row.status === "ready");
   const isBusy = phase === "previewing" || phase === "applying";
+
+  // The type filter narrows what's on screen. Selection state is deliberately
+  // NOT cleared when it changes — toggling back restores what you had — but
+  // every count and the apply action use `selected ∩ visible`, so "Add N
+  // selected" can never act on a row you can't currently see.
+  const visibleRows = rows.filter((row) => {
+    if (typeFilter === "recurring") return row.isRecurring;
+    if (typeFilter === "one-off") return !row.isRecurring;
+    return true;
+  });
+  const selectableVisible = visibleRows.filter((row) => row.status === "ready");
+  const selectedVisible = selectableVisible.filter((row) => selected.has(row.key));
+  const recurringCount = rows.filter((row) => row.isRecurring).length;
 
   const fetchWeek = useCallback(async () => {
     if (!appliedContext.sourceMailbox || rows.length === 0) {
@@ -176,7 +189,9 @@ export default function OnboardingTool({ presets }: { presets: string[] }) {
   }
 
   async function applySelected() {
-    const items = rows.filter((row) => row.status === "ready" && selected.has(row.key));
+    // Intersection of selected and visible, so the filter is a real guard
+    // rather than a display convenience — a row you can't see is never acted on.
+    const items = selectedVisible;
     if (items.length === 0) return;
 
     setPhase("applying");
@@ -206,22 +221,29 @@ export default function OnboardingTool({ presets }: { presets: string[] }) {
       }
     }
 
-    const updated = rows.map<AppliedRow>((row) => {
-      const outcome = outcomes.get(row.key);
-      if (outcome) return outcome;
-      if (row.status === "ready") return { ...row, status: "skipped" };
-      return row;
-    });
+    // Only rows we actually processed change state. Anything left untouched —
+    // because it was filtered out or simply unchecked — stays "ready" and
+    // stays actionable, so you can apply the recurring meetings, switch the
+    // filter, and apply the one-offs without re-running the whole preview.
+    const updated = rows.map<AppliedRow>((row) => outcomes.get(row.key) ?? row);
     setRows(updated);
+    setSelected((current) => {
+      const next = new Set(current);
+      for (const key of outcomes.keys()) next.delete(key);
+      return next;
+    });
 
     const added = updated.filter((row) => row.status === "added").length;
     const forwarded = updated.filter((row) => row.status === "forwarded").length;
     const failed = updated.filter((row) => row.status === "error").length;
+    const remaining = updated.filter((row) => row.status === "ready").length;
     setMessage(
       `Added ${added} as a real attendee, forwarded ${forwarded}${failed ? `, ${failed} failed` : ""}. ` +
-        `Run a new preview to retry failures or onboard someone else.`,
+        (remaining
+          ? `${remaining} meeting(s) still untouched — adjust the filter or selection and add those too.`
+          : `Run a new preview to retry failures or onboard someone else.`),
     );
-    setPhase("done");
+    setPhase(remaining > 0 ? "previewed" : "done");
   }
 
   function toggle(key: string) {
@@ -246,8 +268,20 @@ export default function OnboardingTool({ presets }: { presets: string[] }) {
     setMessage("Cleared. Run a new preview when ready.");
   }
 
-  const forwardOnly = selectable.filter((row) => row.method === "forward").length;
-  const selectedCount = selectable.filter((row) => selected.has(row.key)).length;
+  const forwardOnly = selectedVisible.filter((row) => row.method === "forward").length;
+  const selectedCount = selectedVisible.length;
+
+  /** Adds or removes every currently-visible selectable row, leaving hidden ones alone. */
+  function setAllVisible(picked: boolean) {
+    setSelected((current) => {
+      const next = new Set(current);
+      for (const row of selectableVisible) {
+        if (picked) next.add(row.key);
+        else next.delete(row.key);
+      }
+      return next;
+    });
+  }
 
   return (
     <section className="panel">
@@ -442,31 +476,75 @@ export default function OnboardingTool({ presets }: { presets: string[] }) {
 
           {rows.length > 0 && (
             <>
-              <div className="viewtoggle">
-                <button
-                  type="button"
-                  className={`viewtoggle-btn ${view === "list" ? "active" : ""}`}
-                  onClick={() => setView("list")}
-                >
-                  List
-                </button>
-                <button
-                  type="button"
-                  className={`viewtoggle-btn ${view === "calendar" ? "active" : ""}`}
-                  onClick={() => setView("calendar")}
-                >
-                  Calendar
-                </button>
+              <div className="toolbar">
+                <div className="viewtoggle">
+                  <button
+                    type="button"
+                    className={`viewtoggle-btn ${view === "list" ? "active" : ""}`}
+                    onClick={() => setView("list")}
+                  >
+                    List
+                  </button>
+                  <button
+                    type="button"
+                    className={`viewtoggle-btn ${view === "calendar" ? "active" : ""}`}
+                    onClick={() => setView("calendar")}
+                  >
+                    Calendar
+                  </button>
+                </div>
+
+                <div className="viewtoggle">
+                  {(
+                    [
+                      ["all", "All", rows.length],
+                      ["recurring", "Recurring", recurringCount],
+                      ["one-off", "One-off", rows.length - recurringCount],
+                    ] as const
+                  ).map(([value, label, count]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      className={`viewtoggle-btn ${typeFilter === value ? "active" : ""}`}
+                      onClick={() => setTypeFilter(value)}
+                    >
+                      {label} ({count})
+                    </button>
+                  ))}
+                </div>
+
+                {phase === "previewed" && selectableVisible.length > 0 && (
+                  <div className="viewtoggle">
+                    <button
+                      type="button"
+                      className="viewtoggle-btn"
+                      onClick={() => setAllVisible(true)}
+                      disabled={isBusy}
+                    >
+                      Select all
+                    </button>
+                    <button
+                      type="button"
+                      className="viewtoggle-btn"
+                      onClick={() => setAllVisible(false)}
+                      disabled={isBusy}
+                    >
+                      Select none
+                    </button>
+                  </div>
+                )}
               </div>
               <p className="hint" style={{ marginBottom: 12 }}>
                 In calendar view, click a meeting to toggle it — same as the checkboxes in list view.
+                Select all / none and the confirm button apply to whatever the filter is currently
+                showing; anything hidden is left untouched.
               </p>
             </>
           )}
 
           {view === "list" ? (
             <ul className="results">
-              {rows.map((row) => {
+              {visibleRows.map((row) => {
                 const tag = statusTag(row);
                 const isSelectable = row.status === "ready";
                 const isPicked = selected.has(row.key);
@@ -496,8 +574,12 @@ export default function OnboardingTool({ presets }: { presets: string[] }) {
                   </li>
                 );
               })}
-              {rows.length === 0 && phase === "previewed" && (
-                <li className="result muted">No matching meetings found.</li>
+              {visibleRows.length === 0 && phase !== "idle" && (
+                <li className="result muted">
+                  {rows.length === 0
+                    ? "No matching meetings found."
+                    : `No ${typeFilter} meetings among the ${rows.length} matched. Switch the filter to see the rest.`}
+                </li>
               )}
             </ul>
           ) : (
@@ -527,7 +609,7 @@ export default function OnboardingTool({ presets }: { presets: string[] }) {
                 </button>
               </div>
               <WeekCalendar
-                rows={rows}
+                rows={visibleRows}
                 occurrences={occurrences}
                 weekStart={weekStart}
                 selected={selected}
@@ -538,7 +620,7 @@ export default function OnboardingTool({ presets }: { presets: string[] }) {
             </>
           )}
 
-          {phase === "previewed" && selectable.length > 0 && (
+          {phase === "previewed" && selectableVisible.length > 0 && (
             <>
               {forwardOnly > 0 && (
                 <div className="callout">
@@ -551,20 +633,10 @@ export default function OnboardingTool({ presets }: { presets: string[] }) {
                 </div>
               )}
               <div className="confirmbar">
-                <label className="checkbox">
-                  <input
-                    type="checkbox"
-                    checked={selectedCount === selectable.length && selectable.length > 0}
-                    onChange={(event) =>
-                      setSelected(
-                        event.target.checked
-                          ? new Set(selectable.map((row) => row.key))
-                          : new Set(),
-                      )
-                    }
-                  />
-                  Select all
-                </label>
+                <span className="muted small">
+                  {selectedCount} of {selectableVisible.length} selected
+                  {typeFilter !== "all" ? ` (${typeFilter} only)` : ""}
+                </span>
                 <button className="button go" onClick={applySelected} disabled={isBusy || selectedCount === 0}>
                   {selectedCount ? `Add ${selectedCount} selected` : "Add selected"}
                 </button>
