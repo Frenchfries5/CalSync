@@ -542,10 +542,12 @@ export default function OnboardingTool({ presets }: { presets: string[] }) {
             <>
               {forwardOnly > 0 && (
                 <div className="callout">
-                  {forwardOnly} meeting(s) can only be forwarded because their organizer&rsquo;s
-                  mailbox isn&rsquo;t reachable by this app. The new hire will get a{" "}
-                  <code>Fwd:</code> invite they have to accept, and will land as optional. If any of
-                  those organizers are internal, widen the Exchange Application Access Policy.
+                  {forwardOnly} meeting(s) fall back to forwarding — the new hire gets a{" "}
+                  <code>Fwd:</code> invite they have to accept, and lands as optional. Each row says
+                  why. A <strong>403</strong> means the Exchange Application Access Policy
+                  doesn&rsquo;t cover that organizer and should be widened; <strong>no mailbox
+                  found</strong> means they&rsquo;re external and forwarding is genuinely the only
+                  option.
                 </div>
               )}
               <div className="confirmbar">

@@ -185,21 +185,35 @@ async function calendarView(
 }
 
 /**
+ * Outcome of looking for the organizer's copy. The two failure modes have very
+ * different fixes — widen the access policy vs. the meeting genuinely isn't
+ * findable in their default calendar — so they must not be collapsed into one
+ * "can't write to this mailbox" message.
+ */
+type OrganizerLookup =
+  | { status: "found"; event: GraphEvent }
+  | { status: "unreachable"; reason: string }
+  | { status: "not-found"; reason: string };
+
+/**
  * Finds the ORGANIZER's own copy of a meeting.
  *
  * Exchange gives every mailbox its own event id for the same meeting, so the id
  * we read off the source calendar is useless against the organizer's mailbox.
  * `iCalUId` is the cross-mailbox identity, so we look their copy up by it.
  *
- * Returns null when we can't reach that mailbox at all — external organizer, or
- * a mailbox outside the Application Access Policy. That's the signal to fall
- * back to forwarding.
+ * The UID passed in MUST come from a series master, not from an occurrence —
+ * see masterICalUId(). Occurrences carry a per-instance UID that matches nothing
+ * in the organizer's mailbox.
  */
 async function findOrganizerCopy(
   organizerEmail: string,
   iCalUId: string,
-): Promise<GraphEvent | null> {
-  if (!organizerEmail || !iCalUId) return null;
+): Promise<OrganizerLookup> {
+  if (!organizerEmail) return { status: "not-found", reason: "the event has no organizer" };
+  if (!iCalUId) {
+    return { status: "not-found", reason: "the event has no iCalUId to match on" };
+  }
   try {
     const body = await graphGet<{ value?: GraphEvent[] }>(
       `/users/${encodeURIComponent(organizerEmail)}/events?$filter=iCalUId eq ${odataString(
@@ -209,12 +223,50 @@ async function findOrganizerCopy(
     const events = body.value || [];
     // A recurring meeting returns its series master here, which is exactly what
     // we want to patch — editing the master covers all future occurrences.
-    return events.find((e) => e.type === "seriesMaster") || events[0] || null;
+    const match = events.find((e) => e.type === "seriesMaster") || events[0];
+    if (match) return { status: "found", event: match };
+    return {
+      status: "not-found",
+      reason: `their mailbox is readable, but no event there matches this meeting's UID (Graph only searches their default calendar, so a meeting they organise from a secondary calendar won't be found)`,
+    };
   } catch (error) {
-    if (error instanceof GraphError && (error.status === 403 || error.status === 404)) {
-      return null; // mailbox not reachable — caller falls back to forward
+    if (error instanceof GraphError && error.status === 403) {
+      return {
+        status: "unreachable",
+        reason: `Graph returned 403 for their mailbox — the Exchange Application Access Policy doesn't cover ${organizerEmail}`,
+      };
+    }
+    if (error instanceof GraphError && error.status === 404) {
+      return {
+        status: "unreachable",
+        reason: `no mailbox found for ${organizerEmail} in this tenant (external organiser)`,
+      };
     }
     throw error;
+  }
+}
+
+/**
+ * The UID to match the organizer's copy against.
+ *
+ * calendarView hands back OCCURRENCES, and an occurrence's iCalUId encodes the
+ * instance — it is not the series master's UID and matches nothing in anyone
+ * else's mailbox. Fetching the master costs one call per series and is the
+ * difference between recurring meetings being added properly and silently
+ * falling back to a forward.
+ */
+async function masterEvent(
+  source: CalendarSource,
+  calendarId: string,
+  occurrence: GraphEvent,
+): Promise<GraphEvent> {
+  if (!occurrence.seriesMasterId) return occurrence;
+  try {
+    return await graphGet<GraphEvent>(
+      `${sourceEventPath(source, calendarId, occurrence.seriesMasterId)}?$select=${EVENT_SELECT}`,
+    );
+  } catch {
+    return occurrence; // better a degraded match than a failed row
   }
 }
 
@@ -363,25 +415,25 @@ export async function scanMailbox(options: ScanOptions): Promise<ScanResult> {
       };
 
       try {
-        const organizerCopy = event.iCalUId
-          ? await findOrganizerCopy(organizerEmail, event.iCalUId)
-          : null;
+        // Match on the series master's UID, never the occurrence's — see
+        // masterEvent(). This is also the copy whose attendee list tells us
+        // whether the new hire is already on the whole series.
+        const master = await masterEvent(source, calendarId, event);
+        const lookup = await findOrganizerCopy(organizerEmail, master.iCalUId || "");
 
-        if (!organizerCopy) {
+        if (lookup.status !== "found") {
           return {
             ...base,
             method: "forward",
-            methodReason: organizerEmail
-              ? `${organizerEmail} isn't a mailbox this app can write to (external organizer, or outside the access policy)`
-              : "no organizer on the event",
-            status: attendeeSet(event).has(newHire) ? "already-attendee" : "ready",
+            methodReason: lookup.reason,
+            status: attendeeSet(master).has(newHire) ? "already-attendee" : "ready",
           };
         }
 
         return {
           ...base,
           method: "direct",
-          status: attendeeSet(organizerCopy).has(newHire) ? "already-attendee" : "ready",
+          status: attendeeSet(lookup.event).has(newHire) ? "already-attendee" : "ready",
         };
       } catch (error) {
         return {
@@ -441,11 +493,12 @@ export async function applyOne(
     isAllDay: Boolean(source.isAllDay),
   };
 
-  const organizerCopy = source.iCalUId
-    ? await findOrganizerCopy(organizerEmail, source.iCalUId)
-    : null;
+  // sourceEventId is already the series master's id, so source.iCalUId is the
+  // master UID here — no occurrence lookup needed on this path.
+  const lookup = await findOrganizerCopy(organizerEmail, source.iCalUId || "");
 
-  if (organizerCopy) {
+  if (lookup.status === "found") {
+    const organizerCopy = lookup.event;
     if (attendeeSet(organizerCopy).has(lower(newHire))) {
       return { ...base, method: "direct", status: "already-attendee" };
     }
@@ -477,7 +530,7 @@ export async function applyOne(
   return {
     ...base,
     method: "forward",
-    methodReason: `${organizerEmail || "the organizer"} isn't a mailbox this app can write to`,
+    methodReason: lookup.reason,
     status: "forwarded",
   };
 }
