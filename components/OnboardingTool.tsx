@@ -132,6 +132,8 @@ export default function OnboardingTool({ presets }: { presets: string[] }) {
       const data = await postJson<{
         rows: MeetingRow[];
         references: ResolvedReference[];
+        sourceKind: "mailbox" | "group";
+        sourceLabel: string;
         calendarsScanned: number;
         occurrencesScanned: number;
       }>("/api/preview", {
@@ -158,8 +160,12 @@ export default function OnboardingTool({ presets }: { presets: string[] }) {
 
       const ready = results.filter((row) => row.status === "ready");
       const direct = ready.filter((row) => row.method === "direct").length;
+      const sourceDesc =
+        data.sourceKind === "group"
+          ? `the Microsoft 365 group calendar for ${data.sourceLabel}`
+          : `${data.calendarsScanned} calendar(s) in ${data.sourceLabel}`;
       setMessage(
-        `Scanned ${data.calendarsScanned} calendar(s), ${data.occurrencesScanned} occurrence(s) over ${windowDays} days → ${results.length} meeting(s). ` +
+        `Scanned ${sourceDesc}, ${data.occurrencesScanned} occurrence(s) over ${windowDays} days → ${results.length} meeting(s). ` +
           `${direct} can be added as a real attendee, ${ready.length - direct} can only be forwarded.`,
       );
       setPhase("previewed");
@@ -307,7 +313,11 @@ export default function OnboardingTool({ presets }: { presets: string[] }) {
             </datalist>
             <p className="hint">
               Whose calendar we read. Because this runs on an application token, it does not have to
-              be your mailbox and you do not have to be on the meetings.
+              be your mailbox and you do not have to be on the meetings. A <strong>person</strong>,
+              a shared or room mailbox, or a <strong>Microsoft 365 group</strong> all work.
+              A <strong>distribution list will not</strong> — a DL is a routing rule with no mailbox
+              behind it, so there is no calendar to read. For a DL, mirror someone who is on the
+              meetings and put the DL in the field below instead.
             </p>
           </div>
 

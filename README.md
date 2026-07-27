@@ -62,11 +62,23 @@ least `minGroupMembers` of its members are, excluding the mirrored person. That
 threshold defaults to 2 because member matching is broad: at 1, a 1:1 between the
 mirrored person and any single teammate would match the whole team's filter.
 
-Note that a **distribution list has no calendar of its own** — it's a routing rule.
-Only a Microsoft 365 group has a mailbox, and reading a group's calendar needs
-`/groups/{id}/events` rather than `/users/{x}/calendars`, which this tool doesn't
-do. So a group address works as a *filter* but not as the *mailbox to mirror*.
-Shared and room mailboxes do work as a source, since those are real mailboxes.
+### What can be the "mailbox to mirror"
+
+`resolveSource()` classifies whatever address you type:
+
+| Address | Result |
+| --- | --- |
+| A person, shared mailbox, or room mailbox | Read via `/users/{upn}/calendars` — every calendar in the mailbox |
+| A **Microsoft 365 group** | Read via `/groups/{id}/calendarView` — groups have exactly one calendar, so the calendar-name filter doesn't apply |
+| A **distribution list** | Rejected with an explanation. A DL is a routing rule with no mailbox behind it, so there is no calendar to read — this is not a limitation that can be lifted |
+| A security group | Same as a DL |
+
+For a distribution list, mirror a person who attends the meetings and put the DL
+in the reference filter instead.
+
+A 403 on the mailbox lookup is deliberately *not* reported as "not found" — that
+means the mailbox exists but the Application Access Policy excludes it, and
+conflating the two sends you hunting for a typo that isn't there.
 
 ## Known limitations
 

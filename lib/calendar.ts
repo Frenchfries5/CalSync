@@ -1,5 +1,5 @@
 import { GraphError, graphAll, graphGet, graphPatch, graphPost, odataString } from "./graph";
-import { resolveReferences } from "./groups";
+import { classify, findGroup, resolveReferences } from "./groups";
 import type {
   AppliedRow,
   GraphAttendee,
@@ -72,8 +72,104 @@ export async function listCalendars(
   return matches;
 }
 
+/**
+ * Where we read meetings from. A user mailbox can hold several calendars; a
+ * Microsoft 365 group has exactly one, reached through a different Graph path
+ * (`/groups/{id}` rather than `/users/{upn}`), which is why this is a union
+ * rather than just a string.
+ */
+export type CalendarSource =
+  | { kind: "mailbox"; address: string; calendars: GraphCalendar[] }
+  | { kind: "group"; address: string; groupId: string; displayName: string };
+
+const sourceCache = new Map<string, { value: CalendarSource; expiresAt: number }>();
+const SOURCE_CACHE_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * Works out what the operator typed into "mailbox to mirror".
+ *
+ * The important case to get right is the one that can't work: a classic
+ * distribution list is a routing rule with no mailbox behind it, so it has no
+ * calendar to read and never will. That deserves an explanation, not a 404 —
+ * it's an easy and reasonable thing to try.
+ */
+export async function resolveSource(
+  address: string,
+  calendarNameFilter?: string,
+): Promise<CalendarSource> {
+  const key = `${lower(address)}::${lower(calendarNameFilter)}`;
+  const cached = sourceCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+
+  let source: CalendarSource;
+  try {
+    await graphGet<{ id: string }>(`/users/${encodeURIComponent(address)}?$select=id`);
+    source = {
+      kind: "mailbox",
+      address,
+      calendars: await listCalendars(address, calendarNameFilter),
+    };
+  } catch (error) {
+    if (!(error instanceof GraphError) || (error.status !== 404 && error.status !== 400)) {
+      // 403 in particular means the mailbox exists but the Application Access
+      // Policy excludes it — saying "not found" there would send you hunting
+      // for a typo that isn't the problem.
+      throw error;
+    }
+
+    const group = await findGroup(lower(address));
+    if (!group) {
+      throw new Error(
+        `${address} isn't a mailbox or a group this app can see. Check the address, and that the Exchange Application Access Policy covers it.`,
+      );
+    }
+
+    const groupType = classify(group);
+    if (groupType !== "microsoft365") {
+      const label =
+        groupType === "distribution" ? "a distribution list" : "a security group";
+      throw new Error(
+        `${address} is ${label}, which has no calendar of its own — only a Microsoft 365 group does. ` +
+          `Mirror a person who is on the meetings instead, and put ${address} in "Only meetings involving" to narrow the scan to that team's meetings.`,
+      );
+    }
+
+    source = {
+      kind: "group",
+      address,
+      groupId: group.id,
+      displayName: group.displayName || address,
+    };
+  }
+
+  sourceCache.set(key, { value: source, expiresAt: Date.now() + SOURCE_CACHE_TTL_MS });
+  return source;
+}
+
+/** Calendar ids to iterate for a source. Groups have a single implicit one. */
+function sourceCalendarIds(source: CalendarSource): string[] {
+  return source.kind === "group" ? [""] : source.calendars.map((c) => c.id).filter(Boolean);
+}
+
+function calendarViewPath(source: CalendarSource, calendarId: string): string {
+  if (source.kind === "group") {
+    return `/groups/${encodeURIComponent(source.groupId)}/calendarView`;
+  }
+  return `/users/${encodeURIComponent(source.address)}/calendars/${encodeURIComponent(calendarId)}/calendarView`;
+}
+
+/** Path to a single event on the source, for re-reading and forwarding. */
+function sourceEventPath(source: CalendarSource, calendarId: string, eventId: string): string {
+  if (source.kind === "group") {
+    return `/groups/${encodeURIComponent(source.groupId)}/events/${encodeURIComponent(eventId)}`;
+  }
+  return `/users/${encodeURIComponent(source.address)}/calendars/${encodeURIComponent(
+    calendarId,
+  )}/events/${encodeURIComponent(eventId)}`;
+}
+
 async function calendarView(
-  mailbox: string,
+  source: CalendarSource,
   calendarId: string,
   startIso: string,
   endIso: string,
@@ -85,9 +181,7 @@ async function calendarView(
     $top: "100",
     $orderby: "start/dateTime",
   });
-  return graphAll<GraphEvent>(
-    `/users/${encodeURIComponent(mailbox)}/calendars/${encodeURIComponent(calendarId)}/calendarView?${params}`,
-  );
+  return graphAll<GraphEvent>(`${calendarViewPath(source, calendarId)}?${params}`);
 }
 
 /**
@@ -154,6 +248,8 @@ export type ScanResult = {
   windowStart: string;
   windowEnd: string;
   references: ResolvedReference[];
+  sourceKind: CalendarSource["kind"];
+  sourceLabel: string;
 };
 
 /**
@@ -194,7 +290,8 @@ export async function scanMailbox(options: ScanOptions): Promise<ScanResult> {
   const startIso = windowStart.toISOString();
   const endIso = windowEnd.toISOString();
 
-  const calendars = await listCalendars(options.sourceMailbox, options.calendarNameFilter);
+  const source = await resolveSource(options.sourceMailbox, options.calendarNameFilter);
+  const calendarIds = sourceCalendarIds(source);
   const newHire = lower(options.newHireEmail);
   const sourceMailbox = lower(options.sourceMailbox);
   const minGroupMembers = Math.max(1, options.minGroupMembers ?? DEFAULT_MIN_GROUP_MEMBERS);
@@ -214,9 +311,8 @@ export async function scanMailbox(options: ScanOptions): Promise<ScanResult> {
   >();
   let occurrencesScanned = 0;
 
-  for (const calendar of calendars) {
-    if (!calendar.id) continue;
-    const events = await calendarView(options.sourceMailbox, calendar.id, startIso, endIso);
+  for (const calendarId of calendarIds) {
+    const events = await calendarView(source, calendarId, startIso, endIso);
     for (const event of events) {
       occurrencesScanned++;
       if (event.isCancelled) continue;
@@ -233,9 +329,9 @@ export async function scanMailbox(options: ScanOptions): Promise<ScanResult> {
         if (matchedVia.length === 0) continue;
       }
 
-      const key = `${calendar.id}::${event.seriesMasterId || event.id}`;
+      const key = `${calendarId}::${event.seriesMasterId || event.id}`;
       if (!byEvent.has(key)) {
-        byEvent.set(key, { event, calendarId: calendar.id, matchedVia });
+        byEvent.set(key, { event, calendarId, matchedVia });
       }
     }
   }
@@ -302,7 +398,9 @@ export async function scanMailbox(options: ScanOptions): Promise<ScanResult> {
   return {
     rows,
     references,
-    calendarsScanned: calendars.length,
+    sourceKind: source.kind,
+    sourceLabel: source.kind === "group" ? source.displayName : source.address,
+    calendarsScanned: calendarIds.length,
     occurrencesScanned,
     windowStart: startIso,
     windowEnd: endIso,
@@ -320,9 +418,8 @@ export async function applyOne(
   newHireEmail: string,
   attendeeType: "required" | "optional",
 ): Promise<AppliedRow> {
-  const eventPath = `/users/${encodeURIComponent(sourceMailbox)}/calendars/${encodeURIComponent(
-    row.sourceCalendarId,
-  )}/events/${encodeURIComponent(row.sourceEventId)}`;
+  const calendarSource = await resolveSource(sourceMailbox);
+  const eventPath = sourceEventPath(calendarSource, row.sourceCalendarId, row.sourceEventId);
 
   const source = await graphGet<GraphEvent>(`${eventPath}?$select=${EVENT_SELECT}`);
   const organizerEmail = source.organizer?.emailAddress?.address || "";
@@ -392,11 +489,10 @@ export async function listWeekOccurrences(
   startIso: string,
   endIso: string,
 ): Promise<Occurrence[]> {
-  const calendars = await listCalendars(sourceMailbox, calendarNameFilter);
+  const source = await resolveSource(sourceMailbox, calendarNameFilter);
   const occurrences: Occurrence[] = [];
-  for (const calendar of calendars) {
-    if (!calendar.id) continue;
-    const events = await calendarView(sourceMailbox, calendar.id, startIso, endIso);
+  for (const calendarId of sourceCalendarIds(source)) {
+    const events = await calendarView(source, calendarId, startIso, endIso);
     for (const event of events) {
       if (event.isCancelled) continue;
       occurrences.push({

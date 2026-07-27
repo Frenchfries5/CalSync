@@ -19,7 +19,7 @@ import type { ResolvedReference } from "./types";
  * Requires the application permission `Group.Read.All`.
  */
 
-type GraphGroup = {
+export type GraphGroup = {
   id: string;
   displayName?: string;
   mail?: string;
@@ -40,7 +40,7 @@ type DirectoryMember = {
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const cache = new Map<string, { value: ResolvedReference; expiresAt: number }>();
 
-function classify(group: GraphGroup): ResolvedReference["groupType"] {
+export function classify(group: GraphGroup): ResolvedReference["groupType"] {
   if (group.groupTypes?.includes("Unified")) return "microsoft365";
   if (group.mailEnabled && !group.securityEnabled) return "distribution";
   if (group.mailEnabled && group.securityEnabled) return "mail-enabled-security";
@@ -55,7 +55,7 @@ function smtpAddresses(proxyAddresses: string[] | undefined): string[] {
     .filter(Boolean);
 }
 
-async function findGroup(address: string): Promise<GraphGroup | null> {
+export async function findGroup(address: string): Promise<GraphGroup | null> {
   const select = "id,displayName,mail,groupTypes,mailEnabled,securityEnabled,proxyAddresses";
   const byMail = await graphGet<{ value?: GraphGroup[] }>(
     `/groups?$filter=mail eq ${odataString(address)}&$select=${select}&$top=2`,
