@@ -1,6 +1,21 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import {
+  AlertTriangle,
+  CalendarDays,
+  CalendarSearch,
+  Check,
+  CheckCheck,
+  ChevronLeft,
+  ChevronRight,
+  Info,
+  ListChecks,
+  Rows3,
+  Search,
+  UserPlus,
+  X,
+} from "lucide-react";
 import WeekCalendar, { addDays, formatWeekLabel, mondayOf } from "./WeekCalendar";
 import type { AppliedRow, MeetingRow, Occurrence, ResolvedReference } from "@/lib/types";
 
@@ -306,7 +321,10 @@ export default function OnboardingTool({ presets }: { presets: string[] }) {
         </div>
         <div className="step-body">
           <p className="eyebrow">Step 1</p>
-          <p className="step-title">Who&rsquo;s joining</p>
+          <p className="step-title">
+            <UserPlus size={18} strokeWidth={1.5} />
+            Who&rsquo;s joining
+          </p>
           <div className="field">
             <label htmlFor="newhire">New hire email</label>
             <input
@@ -328,7 +346,10 @@ export default function OnboardingTool({ presets }: { presets: string[] }) {
         </div>
         <div className="step-body">
           <p className="eyebrow">Step 2</p>
-          <p className="step-title">What to mirror</p>
+          <p className="step-title">
+            <CalendarSearch size={18} strokeWidth={1.5} />
+            What to mirror
+          </p>
 
           <div className="field">
             <label htmlFor="source">Mailbox to mirror</label>
@@ -438,7 +459,8 @@ export default function OnboardingTool({ presets }: { presets: string[] }) {
           </div>
 
           <button className="button" onClick={runPreview} disabled={isBusy}>
-            {phase === "previewing" ? "Scanning…" : "Preview"}
+            <Search size={16} strokeWidth={1.5} />
+            {phase === "previewing" ? "Scanning…" : "Preview meetings"}
           </button>
         </div>
       </div>
@@ -449,9 +471,17 @@ export default function OnboardingTool({ presets }: { presets: string[] }) {
         </div>
         <div className="step-body">
           <p className="eyebrow">Step 3</p>
-          <p className="step-title">Review &amp; confirm</p>
+          <p className="step-title">
+            <ListChecks size={18} strokeWidth={1.5} />
+            Review &amp; confirm
+          </p>
 
-          <p className="status">{message}</p>
+          {message && (
+            <p className="status">
+              <Info size={16} strokeWidth={1.5} />
+              <span>{message}</span>
+            </p>
+          )}
 
           {references.length > 0 && (
             <ul className="results" style={{ marginBottom: 16 }}>
@@ -477,24 +507,26 @@ export default function OnboardingTool({ presets }: { presets: string[] }) {
           {rows.length > 0 && (
             <>
               <div className="toolbar">
-                <div className="viewtoggle">
+                <div className="segmented">
                   <button
                     type="button"
-                    className={`viewtoggle-btn ${view === "list" ? "active" : ""}`}
+                    className={`segmented-btn ${view === "list" ? "active" : ""}`}
                     onClick={() => setView("list")}
                   >
+                    <Rows3 size={15} strokeWidth={1.5} />
                     List
                   </button>
                   <button
                     type="button"
-                    className={`viewtoggle-btn ${view === "calendar" ? "active" : ""}`}
+                    className={`segmented-btn ${view === "calendar" ? "active" : ""}`}
                     onClick={() => setView("calendar")}
                   >
+                    <CalendarDays size={15} strokeWidth={1.5} />
                     Calendar
                   </button>
                 </div>
 
-                <div className="viewtoggle">
+                <div className="segmented">
                   {(
                     [
                       ["all", "All", rows.length],
@@ -505,7 +537,7 @@ export default function OnboardingTool({ presets }: { presets: string[] }) {
                     <button
                       key={value}
                       type="button"
-                      className={`viewtoggle-btn ${typeFilter === value ? "active" : ""}`}
+                      className={`segmented-btn ${typeFilter === value ? "active" : ""}`}
                       onClick={() => setTypeFilter(value)}
                     >
                       {label} ({count})
@@ -514,30 +546,32 @@ export default function OnboardingTool({ presets }: { presets: string[] }) {
                 </div>
 
                 {phase === "previewed" && selectableVisible.length > 0 && (
-                  <div className="viewtoggle">
+                  <div className="segmented">
                     <button
                       type="button"
-                      className="viewtoggle-btn"
+                      className="segmented-btn"
                       onClick={() => setAllVisible(true)}
                       disabled={isBusy}
                     >
-                      Select all
+                      <CheckCheck size={15} strokeWidth={1.5} />
+                      All
                     </button>
                     <button
                       type="button"
-                      className="viewtoggle-btn"
+                      className="segmented-btn"
                       onClick={() => setAllVisible(false)}
                       disabled={isBusy}
                     >
-                      Select none
+                      <X size={15} strokeWidth={1.5} />
+                      None
                     </button>
                   </div>
                 )}
               </div>
-              <p className="hint" style={{ marginBottom: 12 }}>
+              <p className="hint" style={{ marginBottom: 14 }}>
                 In calendar view, click a meeting to toggle it — same as the checkboxes in list view.
-                Select all / none and the confirm button apply to whatever the filter is currently
-                showing; anything hidden is left untouched.
+                All / None and the confirm button apply to whatever the filter is currently showing;
+                anything hidden is left untouched.
               </p>
             </>
           )}
@@ -597,22 +631,24 @@ export default function OnboardingTool({ presets }: { presets: string[] }) {
               <div className="calnav">
                 <button
                   type="button"
-                  className="button secondary calnav-btn"
+                  className="button secondary small"
+                  aria-label="Previous week"
                   onClick={() => setWeekStart((current) => addDays(current, -7))}
                 >
-                  ←
+                  <ChevronLeft size={16} strokeWidth={1.5} />
                 </button>
                 <span className="calnav-label">{formatWeekLabel(weekStart)}</span>
                 <button
                   type="button"
-                  className="button secondary calnav-btn"
+                  className="button secondary small"
+                  aria-label="Next week"
                   onClick={() => setWeekStart((current) => addDays(current, 7))}
                 >
-                  →
+                  <ChevronRight size={16} strokeWidth={1.5} />
                 </button>
                 <button
                   type="button"
-                  className="button secondary calnav-btn"
+                  className="button secondary small"
                   onClick={() => setWeekStart(mondayOf(new Date()))}
                 >
                   Today
@@ -634,12 +670,15 @@ export default function OnboardingTool({ presets }: { presets: string[] }) {
             <>
               {forwardOnly > 0 && (
                 <div className="callout">
+                  <AlertTriangle size={16} strokeWidth={1.5} />
+                  <span>
                   {forwardOnly} meeting(s) fall back to forwarding — the new hire gets a{" "}
                   <code>Fwd:</code> invite they have to accept, and lands as optional. Each row says
                   why. A <strong>403</strong> means the Exchange Application Access Policy
                   doesn&rsquo;t cover that organizer and should be widened; <strong>no mailbox
                   found</strong> means they&rsquo;re external and forwarding is genuinely the only
                   option.
+                  </span>
                 </div>
               )}
               <div className="confirmbar">
@@ -647,11 +686,13 @@ export default function OnboardingTool({ presets }: { presets: string[] }) {
                   {selectedCount} of {selectableVisible.length} selected
                   {typeFilter !== "all" ? ` (${typeFilter} only)` : ""}
                 </span>
-                <button className="button go" onClick={applySelected} disabled={isBusy || selectedCount === 0}>
-                  {selectedCount ? `Add ${selectedCount} selected` : "Add selected"}
-                </button>
+                <span className="spacer" />
                 <button className="button secondary" onClick={reset} disabled={isBusy}>
                   Cancel
+                </button>
+                <button className="button" onClick={applySelected} disabled={isBusy || selectedCount === 0}>
+                  <Check size={16} strokeWidth={1.5} />
+                  {selectedCount ? `Add ${selectedCount} to meetings` : "Add selected"}
                 </button>
               </div>
             </>
