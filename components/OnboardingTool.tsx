@@ -567,9 +567,19 @@ export default function OnboardingTool({ presets }: { presets: string[] }) {
                     <span className="muted meta">
                       organizer: {row.organizerEmail || "?"} · {row.isRecurring ? "recurring" : "one-off"} ·
                       {row.matchedVia?.length ? ` via ${row.matchedVia.join(", ")} · ` : " "}
-                      method: {row.method === "direct" ? "direct add to organizer's copy" : "forward"}
-                      {row.methodReason ? ` (${row.methodReason})` : ""}
-                      {row.detail ? ` · ${row.detail}` : ""}
+                      {/* Don't claim a method on an errored row — we never got far
+                          enough to decide one, and saying "forward" reads as a
+                          deliberate choice rather than a failure. */}
+                      {row.status === "error" ? (
+                        <>failed: {row.detail || "unknown error"}</>
+                      ) : (
+                        <>
+                          method:{" "}
+                          {row.method === "direct" ? "direct add to organizer's copy" : "forward"}
+                          {row.methodReason ? ` (${row.methodReason})` : ""}
+                          {row.detail ? ` · ${row.detail}` : ""}
+                        </>
+                      )}
                     </span>
                   </li>
                 );

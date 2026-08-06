@@ -99,6 +99,19 @@ cross-mailbox identity. Three things make that lookup harder than it sounds:
 The PATCH targets wherever the copy was actually found, not an assumed
 `/users/{id}/events/{id}` path.
 
+## Throttling
+
+Exchange Online limits how many requests one application may have in flight
+against a **single mailbox** (four, at time of writing) and rejects the rest with
+*"Application is over its MailboxConcurrency limit"*. The limit is per mailbox,
+not global, so `graphRequest` gates concurrency per `/users/{x}` or `/groups/{x}`
+target rather than throttling everything — several mailboxes still proceed in
+parallel. 429 and 503 are retried with `Retry-After` honoured; both mean Exchange
+rejected the call before acting on it, so retrying is safe even for writes.
+
+If you still hit it, narrow the look-ahead window or the calendar filter — a
+smaller scan means fewer organizer lookups.
+
 ## Known limitations
 
 - **Adding an attendee notifies everyone.** Graph has no equivalent of Outlook's

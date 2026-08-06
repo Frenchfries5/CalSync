@@ -459,9 +459,14 @@ export async function scanMailbox(options: ScanOptions): Promise<ScanResult> {
 
   const candidates = [...byEvent.entries()];
 
+  // Kept low on purpose. Each worker touches the source mailbox (fetching the
+  // series master) and then an organizer's mailbox, so a high number here
+  // stacks requests against the same mailbox and trips Exchange's per-mailbox
+  // concurrency cap. graphRequest also gates per mailbox; this is the cheaper
+  // first line of defence.
   const rows = await mapLimit<(typeof candidates)[number], MeetingRow>(
     candidates,
-    6,
+    3,
     async ([key, { event, calendarId, matchedVia }]) => {
       const organizerEmail = event.organizer?.emailAddress?.address || "";
       const organizerName = event.organizer?.emailAddress?.name || organizerEmail;

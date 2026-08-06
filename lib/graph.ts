@@ -79,6 +79,59 @@ export class GraphError extends Error {
   }
 }
 
+/**
+ * Exchange Online caps how many requests one application may have in flight
+ * against a SINGLE mailbox — four, at time of writing — and answers the fifth
+ * with "Application is over its MailboxConcurrency limit". The cap is per
+ * mailbox, not global, so the fix isn't to go slower overall: it's to keep at
+ * most a few requests against any one mailbox while still working on several
+ * mailboxes at once.
+ */
+const MAILBOX_CONCURRENCY = 3;
+
+type Gate = { active: number; waiting: Array<() => void> };
+const gates = new Map<string, Gate>();
+
+/** `/users/foo@bar/...` or `/groups/{id}/...` → the thing being throttled. */
+function mailboxKey(url: string): string | null {
+  const match = url.match(/\/(users|groups)\/([^/?]+)/);
+  return match ? `${match[1]}:${decodeURIComponent(match[2]).toLowerCase()}` : null;
+}
+
+async function withMailboxSlot<T>(url: string, run: () => Promise<T>): Promise<T> {
+  const key = mailboxKey(url);
+  if (!key) return run();
+
+  let gate = gates.get(key);
+  if (!gate) {
+    gate = { active: 0, waiting: [] };
+    gates.set(key, gate);
+  }
+  if (gate.active >= MAILBOX_CONCURRENCY) {
+    await new Promise<void>((resolve) => gate!.waiting.push(resolve));
+  }
+  gate.active++;
+  try {
+    return await run();
+  } finally {
+    gate.active--;
+    gate.waiting.shift()?.();
+    if (gate.active === 0 && gate.waiting.length === 0) gates.delete(key);
+  }
+}
+
+const MAX_ATTEMPTS = 4;
+
+function throttleDelayMs(response: Response, attempt: number): number {
+  // Exchange tells us how long to wait; trust it, but don't let a pathological
+  // value stall the whole request for minutes.
+  const retryAfter = Number(response.headers.get("Retry-After"));
+  if (Number.isFinite(retryAfter) && retryAfter > 0) {
+    return Math.min(retryAfter * 1000, 30_000);
+  }
+  return Math.min(1000 * 2 ** attempt, 15_000);
+}
+
 async function graphRequest(
   method: string,
   pathOrUrl: string,
@@ -86,34 +139,49 @@ async function graphRequest(
   extraHeaders: Record<string, string> = {},
 ): Promise<unknown> {
   const url = pathOrUrl.startsWith("https://") ? pathOrUrl : `${GRAPH}${pathOrUrl}`;
-  const response = await fetch(url, {
-    method,
-    headers: {
-      Authorization: `Bearer ${await appToken()}`,
-      Accept: "application/json",
-      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-      ...extraHeaders,
-    },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+
+  return withMailboxSlot(url, async () => {
+    for (let attempt = 0; ; attempt++) {
+      const response = await fetch(url, {
+        method,
+        headers: {
+          Authorization: `Bearer ${await appToken()}`,
+          Accept: "application/json",
+          ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+          ...extraHeaders,
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+
+      // 429 and 503 both mean Exchange rejected the call before doing anything
+      // with it, so retrying is safe even for the writes — nothing was sent.
+      if ((response.status === 429 || response.status === 503) && attempt < MAX_ATTEMPTS - 1) {
+        await new Promise((resolve) => setTimeout(resolve, throttleDelayMs(response, attempt)));
+        continue;
+      }
+
+      const text = await response.text();
+      let parsed: unknown = text;
+      try {
+        parsed = text ? JSON.parse(text) : {};
+      } catch {
+        // Non-JSON body (rare); fall through with the raw text.
+      }
+
+      if (!response.ok) {
+        const err = (parsed as { error?: { code?: string; message?: string } })?.error;
+        const detail = err?.message || text || `Graph ${method} failed`;
+        throw new GraphError(
+          response.status === 429 || response.status === 503
+            ? `${detail} (still throttled after ${MAX_ATTEMPTS} attempts — try a narrower window or fewer calendars)`
+            : detail,
+          response.status,
+          err?.code,
+        );
+      }
+      return parsed;
+    }
   });
-
-  const text = await response.text();
-  let parsed: unknown = text;
-  try {
-    parsed = text ? JSON.parse(text) : {};
-  } catch {
-    // Non-JSON body (rare); fall through with the raw text.
-  }
-
-  if (!response.ok) {
-    const err = (parsed as { error?: { code?: string; message?: string } })?.error;
-    throw new GraphError(
-      err?.message || text || `Graph ${method} failed`,
-      response.status,
-      err?.code,
-    );
-  }
-  return parsed;
 }
 
 export function graphGet<T>(path: string): Promise<T> {
