@@ -360,7 +360,7 @@ export default function OnboardingTool({ presets }: { presets: string[] }) {
             <input
               id="references"
               type="text"
-              placeholder="growth@coverdash.com, veronica.r@coverdash.com"
+              placeholder="growth@coverdash.com"
               value={referenceEmails}
               onChange={(event) => setReferenceEmails(event.target.value)}
             />
