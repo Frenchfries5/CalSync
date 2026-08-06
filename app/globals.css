@@ -96,7 +96,21 @@ body {
   letter-spacing: -0.01em;
   white-space: nowrap;
 }
+.appbar-right { display: flex; align-items: center; gap: 16px; min-width: 0; }
 .appbar-user { display: flex; align-items: center; gap: 12px; }
+
+/* Sister-app link. A nav item, not a CTA — the design system reserves fills and
+   the green glow for actions, so this stays a plain link. */
+.appbar-link {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 13px; font-weight: 500;
+  color: var(--cd-fg-2); text-decoration: none;
+  white-space: nowrap;
+  transition: color 200ms ease;
+}
+.appbar-link:hover { color: var(--cd-primary-600); }
+.appbar-link svg { opacity: 0.7; }
+.narrow-only { display: none; }
 
 main { max-width: 880px; margin: 0 auto; padding: 32px 24px 72px; }
 
@@ -399,6 +413,13 @@ li { margin: 4px 0; }
   .appbar-inner { padding: 12px 16px; }
   .appbar-title { display: none; }
   .appbar-divider { display: none; }
+  /* Narrow bars can't hold the wordmark, the sister-app link, the signed-in
+     address and a button. The address is the least useful of those here. */
+  .appbar-right { gap: 10px; }
+  .appbar-user > span.muted { display: none; }
+  .wide-only { display: none; }
+  .narrow-only { display: inline; }
+  .appbar-brand img { width: 128px; height: auto; }
   .panel-intro, .panel-content { padding: 20px; }
   .step { grid-template-columns: 26px 1fr; column-gap: 12px; padding: 20px; }
   .step-node { width: 26px; height: 26px; font-size: 12px; }
